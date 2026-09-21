@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Cocina · Ventas La Yola</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;color:#111}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7}header{position:sticky;top:0;z-index:5;background:#fff;padding:14px 14px 10px;border-bottom:1px solid #ddd}
+h1{font-size:22px;margin:0 0 5px}#status{font-size:14px;color:#666}main{max-width:760px;margin:auto;padding:12px 12px 100px}
+.order{background:#fff;border-radius:16px;margin:10px 0;padding:15px;box-shadow:0 1px 4px #00000012}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid #eee;padding-bottom:10px}
+.num{font-weight:800;font-size:18px}.table{font-weight:800;font-size:20px}.time{font-size:13px;color:#666;margin-top:3px}
+.item{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #f0f0f0}.item:last-child{border-bottom:0}
+.qty{font-weight:800;margin-right:8px}button{border:0;border-radius:10px;padding:10px 12px;font:inherit;background:#eee}button.done{background:#111;color:#fff}
+.empty{background:#fff;border-radius:16px;padding:30px;text-align:center;color:#666;margin-top:15px}
+.note{font-size:15px;line-height:1.35}</style><link rel="manifest" href="manifest-cocina.json"></head><body>
+<header><h1>👨‍🍳 Cocina</h1><div id="status">Conectando…</div><button id="pushBtn" style="margin-top:8px;border:0;border-radius:10px;padding:9px 12px">🔔 Activar notificaciones</button><div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px"><a href="index.html" style="padding:9px 12px;border-radius:10px;background:#111;color:#fff;text-decoration:none">🍽️ Comandero</a><a href="barra.html" style="padding:9px 12px;border-radius:10px;background:#e9eefc;color:#111;text-decoration:none">🍹 Barra</a><a href="cierre-dia.html" style="padding:9px 12px;border-radius:10px;background:#eee;color:#111;text-decoration:none">📊 Cierre</a></div></header>
+<main id="orders"><div class="empty">Cargando comandas…</div></main>
+<script src="firebase-config.js"></script>
+<script type="module">
+const allowed=["Pizzas", "Especialidades"];
+let db, dbRef, dbOnValue, dbSet;
+let lastIds=new Set();
+let audioCtx=null;
+const VAPID_KEY=window.VENTAS_VAPID_KEY||"PON_AQUI_TU_CLAVE_PUBLICA_VAPID";
+
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function beep(){
+ try{
+   audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+   o.frequency.value=880;g.gain.value=.12;o.connect(g);g.connect(audioCtx.destination);
+   o.start();document.getElementById("pushBtn").onclick=enablePush;o.stop(audioCtx.currentTime+.25);
+ }catch(e){}
+}
+async function notifyNew(){
+ beep();
+ try{if(Notification.permission==="default") await Notification.requestPermission();
+ if(Notification.permission==="granted") new Notification("Nueva comanda — Cocina",{body:"Hay una nueva comanda pendiente."});}catch(e){}
+}
+
+function render(value){
+ const root=document.getElementById("orders");
+ const list=Object.values(value||{})
+   .filter(o=>o && (o.status_cocina||"pendiente")==="pendiente")
+   .map(o=>({...o,items:(o.items||[]).filter(x=>allowed.includes(x.category))}))
+   .filter(o=>o.items.length)
+   .sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+ if(!list.length){root.innerHTML='<div class="empty">No hay comandas pendientes.</div>';return;}
+ root.innerHTML=list.map(o=>{
+   const date=new Date(o.createdAt||Date.now()).toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+   return `<article class="order"><div class="top"><div><div class="num">Comanda #${esc(o.id.slice(-6).toUpperCase())}</div><div class="time">${date}</div></div><div class="table">Mesa ${esc(o.table)}</div></div>
+   <div>${o.items.map(i=>`<div class="item"><span><span class="qty">${i.qty}×</span>${esc(i.name)}</span><span>${Number(i.price*i.qty).toFixed(2)} €</span></div>`).join("")}</div>
+   ${(o.note && (o.noteDestination||"cocina")==="cocina")?`<div class="note" style="margin-top:12px;padding:10px;border-radius:10px;background:#fff3cd;border:1px solid #f0d98a"><b>📝 Nota:</b> ${esc(o.note)}</div>`:""}
+   <div style="margin-top:12px;text-align:right"><button class="done" onclick="completeOrder('${esc(o.id)}')">✓ Marcar preparada</button></div></article>`;
+ }).join("");
+}
+window.completeOrder=async function(id){
+ try{await dbSet(dbRef(db,"ventas_la_yola/comandas/"+id+"/status_cocina"),"preparada");}
+ catch(e){alert("No se pudo actualizar la comanda.");}
+};
+
+async function enablePush(){try{if(!VAPID_KEY||VAPID_KEY.startsWith("PON_AQUI")){alert("Falta configurar la clave VAPID de Firebase.");return;}const {getMessaging,getToken,onMessage}=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging.js");const {getApps,getApp}=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");const app=getApps().length?getApp():null;if(!app)return;const messaging=getMessaging(app);const reg=await navigator.serviceWorker.register("firebase-messaging-sw.js");const token=await getToken(messaging,{vapidKey:VAPID_KEY,serviceWorkerRegistration:reg});if(!token){alert("No se obtuvo el permiso de notificaciones.");return;}const {getDatabase,ref,set}=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js");await set(ref(getDatabase(app),"ventas_la_yola/pushTokens/cocina/"+encodeURIComponent(token)),{token,createdAt:Date.now()});alert("Notificaciones activadas en este iPhone.");onMessage(messaging,p=>{if(p?.notification){new Notification(p.notification.title||"Nueva comanda",{body:p.notification.body||"Nueva comanda de cocina"})}})}catch(e){console.error(e);alert("No se pudieron activar las notificaciones.")}}
+
+async function start(){
+ try{
+  const {initializeApp}=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");
+  const {getAuth,signInAnonymously}=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js");
+  const {getDatabase,ref,onValue,set}=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js");
+  const app=initializeApp(window.VENTAS_FIREBASE_CONFIG); const auth=getAuth(app); db=getDatabase(app); dbRef=ref;dbOnValue=onValue;dbSet=set;
+  await signInAnonymously(auth);
+  dbOnValue(dbRef(db,"ventas_la_yola/comandas"),snap=>{
+    const value=snap.val()||{};
+    const ids=Object.keys(value).filter(id=>value[id]?.status_cocina==="pendiente" && (value[id]?.items||[]).some(x=>allowed.includes(x.category)));
+    if(lastIds.size && ids.some(id=>!lastIds.has(id))) notifyNew();
+    lastIds=new Set(ids); render(value);
+    document.getElementById("status").textContent="Conectado · tiempo real";
+    document.getElementById("status").style.color="#188038";
+  });
+  // Notification permission is requested after the user interacts with the page.
+  document.addEventListener("click",()=>{if(Notification.permission==="default")Notification.requestPermission().catch(()=>{})},{once:true});
+ }catch(e){console.error(e);document.getElementById("status").textContent="Error de conexión";}
+}
+start();document.getElementById("pushBtn").onclick=enablePush;
+</script></body></html>

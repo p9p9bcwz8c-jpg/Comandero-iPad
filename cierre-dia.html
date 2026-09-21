@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cierre del día · Ventas La Yola</title>
+<script src="firebase-config.js"></script>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:#f3f4f6;color:#111}
+header{background:#fff;border-bottom:1px solid #ddd;padding:18px 24px;position:sticky;top:0;z-index:5}
+h1{margin:0 0 12px;font-size:25px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,button,a{font:inherit}
+input{padding:10px 12px;border:1px solid #ccc;border-radius:9px}
+button,.back{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;text-decoration:none;display:inline-block}
+.primary{background:#111;color:#fff}.secondary{background:#e9eaee;color:#111}
+main{max-width:1100px;margin:auto;padding:24px}
+.card{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 1px 3px #0001}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.stat{border:1px solid #eee;border-radius:12px;padding:15px}
+.stat span{display:block;color:#666;font-size:13px}.stat b{display:block;font-size:24px;margin-top:5px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #eee}th{background:#f7f7f8}
+.right{text-align:right}.muted{color:#666}.error{color:#a00}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:800px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}main{padding:14px}}
+@media print{
+  header .controls,.actions,.no-print{display:none!important}
+  header{position:static;border:0;padding:0 0 12px}
+  body{background:#fff}
+  main{max-width:none;padding:0}
+  .card{box-shadow:none;border:1px solid #ddd;break-inside:avoid}
+}
+.offlineBanner{display:none;background:#c0392b;color:#fff;text-align:center;padding:8px 12px;font-weight:700;font-size:14px}
+</style>
+</head>
+<body>
+<div id="offlineBanner" class="offlineBanner">⚠️ Sin conexión — no cierres esta pestaña</div>
+<header>
+  <h1>📊 Cierre del día · Ventas La Yola</h1>
+  <div class="controls">
+    <label>Fecha: <input id="date" type="date"></label>
+    <button class="primary" onclick="loadDay()">Consultar cierre</button>
+    <a class="back secondary" href="index.html">← Volver al comandero</a>
+  </div>
+  <div id="status" class="muted" style="margin-top:8px">Conectando…</div>
+</header>
+
+<main>
+  <div class="card no-print"><strong>Resumen imprimible:</strong> cada mesa incluye productos, cantidades, precios, notas, forma de pago y total.</div>
+  <div class="card">
+    <div class="grid">
+      <div class="stat"><span>Total de ventas</span><b id="total">0,00 €</b></div>
+      <div class="stat"><span>Cobros registrados</span><b id="tables">0</b></div>
+      <div class="stat"><span>Efectivo</span><b id="cash">0,00 €</b></div>
+      <div class="stat"><span>Tarjeta</span><b id="card">0,00 €</b></div>
+    </div>
+    <div class="muted" style="margin-top:10px;font-size:13px">Si una cuenta se cobró en varias partes (cuenta dividida), cada parte cuenta aquí por separado.</div>
+  </div>
+
+  <div class="card">
+    <h2>Ventas por categorías</h2>
+    <div id="categories" class="muted">Sin datos.</div>
+  </div>
+
+  <div class="card">
+    <h2>Detalle de mesas</h2>
+    <div id="details" class="muted">Sin datos.</div>
+  </div>
+
+  <div class="card actions no-print">
+    <button class="primary" onclick="window.print()">🖨️ Imprimir cierre</button>
+
+  </div>
+</main>
+
+<script>
+let db, ref, get, set, update, onValue, currentRows = [], currentDate = "", backupCount = 0;
+
+const products = [
+  {cat:"Bebidas",items:[["Refresco",1.8],["Agua P",1],["Agua G",1.5],["Agua Gas",1.2],["Batido",4.5],["Zumo",1.6]]},
+  {cat:"Cerveza",items:[["Cerveza",1.6],["Caña",1.5],["Heineken",1.5],["18/70",1.8],["Piña colada",5],["Radler",1.6],["Águila",1.8],["Jarra",2.5],["Heineken 00",1.6]]},
+  {cat:"Pizzas",items:[["Queso",7.6],["Pimientos",8.1],["Atún",9.3],["Jamón",8.1],["Chorizo",8.1],["Cebolla",8.1],["Bacon",8.1],["Hawaiana",8.7],["Mixta",9.5],["Agregos",1],["Extra queso",3.5],["Extra de carne",3.5]]},
+  {cat:"Especialidades",items:[["Tamal",5.5],["Frituras de maíz",3.5],["Lechón",6],["Minuta",6]]},
+  {cat:"Café",items:[["Solo",1.1],["Cortado",1.2],["Café con leche",1.4],["Barraquito",1.3]]},
+  {cat:"Varios",items:[["Caja de llevar",.3]]}
+];
+
+const categoryByProduct = {};
+for (const c of products) for (const [name] of c.items) categoryByProduct[name] = c.cat;
+
+function money(n){
+  return new Intl.NumberFormat("es-ES",{style:"currency",currency:"EUR"}).format(n||0);
+}
+function esc(v){
+  return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+}
+function today(){
+  const d=new Date(), pad=n=>String(n).padStart(2,"0");
+  return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+}
+function paymentLabel(sale){
+  if(sale.payment==="mixto") return "💵 "+money(sale.cash)+" + 💳 "+money(sale.card);
+  if(sale.payment==="efectivo") return "💵 Efectivo";
+  if(sale.payment==="tarjeta") return "💳 Tarjeta";
+  return "—";
+}
+function paymentLabel_title(sale){
+  const table=String(sale.table||"");
+  const isTakeout=table.indexOf("Para llevar")===0;
+  const base=isTakeout?"🥡 "+table:table;
+  return sale.customer?base+" · "+sale.customer:base;
+}
+
+async function init(){
+  document.getElementById("date").value=today();
+  try{
+    const f=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");
+    const a=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js");
+    const r=await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js");
+    const app=f.initializeApp(window.VENTAS_FIREBASE_CONFIG);
+    await a.signInAnonymously(a.getAuth(app));
+    db=r.getDatabase(app); ref=r.ref; get=r.get; set=r.set; update=r.update;
+    onValue=r.onValue;
+    onValue(ref(db,'.info/connected'),s=>{
+      const el=document.getElementById('offlineBanner');
+      if(el)el.style.display=s.val()===true?'none':'block';
+    });
+    document.getElementById("status").textContent="Conectado a Firebase";
+    await loadDay();
+  }catch(e){
+    console.error(e);
+    document.getElementById("status").innerHTML='<span class="error">Error de conexión: '+esc(e.message)+'</span>';
+  }
+}
+
+async function loadDay(){
+  if(!db) return;
+  currentDate=document.getElementById("date").value;
+  if(!currentDate) return;
+  try{
+    const snap=await get(ref(db,"ventas_la_yola/cierres/"+currentDate));
+    const v=snap.val()||{};
+    currentRows=Object.values(v);
+    backupCount=0;
+    if(!currentRows.length){
+      const bsnap=await get(ref(db,"ventas_la_yola/backups_cierres/"+currentDate));
+      const bv=bsnap.val()||{};
+      backupCount=Object.keys(bv).length;
+    }
+    render();
+    const statusEl=document.getElementById("status");
+    if(currentRows.length){
+      statusEl.textContent=`Cierre cargado: ${currentDate}`;
+    }else if(backupCount>0){
+      statusEl.innerHTML=`No hay datos en cierres para el ${currentDate}, pero hay una copia de seguridad con ${backupCount} venta(s). <button onclick="restoreFromBackup()" style="margin-left:8px;padding:6px 10px;border:0;border-radius:8px;background:#111;color:#fff;cursor:pointer">🛟 Restaurar desde copia</button>`;
+    }else{
+      statusEl.textContent=`No hay mesas cerradas el ${currentDate}`;
+    }
+  }catch(e){
+    console.error(e);
+    document.getElementById("status").innerHTML='<span class="error">No se pudo leer el cierre.</span>';
+  }
+}
+
+async function restoreFromBackup(){
+  if(!confirm(`¿Restaurar las ventas del ${currentDate} desde la copia de seguridad?`))return;
+  try{
+    const bsnap=await get(ref(db,"ventas_la_yola/backups_cierres/"+currentDate));
+    const bv=bsnap.val()||{};
+    const updates={};
+    for(const [k,sale] of Object.entries(bv))updates["ventas_la_yola/cierres/"+currentDate+"/"+k]=sale;
+    if(!Object.keys(updates).length){alert("No hay nada que restaurar.");return}
+    await update(ref(db),updates);
+    alert("Restaurado correctamente.");
+    await loadDay();
+  }catch(e){
+    console.error(e);
+    alert("No se pudo restaurar. Inténtalo de nuevo.");
+  }
+}
+
+function render(){
+  let total=0,cash=0,card=0;
+  const cats={}, rows=[];
+  for(const sale of currentRows){
+    const amount=Number(sale.total)||0;
+    total+=amount;
+    if(sale.cash!=null||sale.card!=null){
+      cash+=Number(sale.cash)||0;
+      card+=Number(sale.card)||0;
+    }else if(sale.payment==="efectivo"){
+      cash+=amount;
+    }else if(sale.payment==="tarjeta"){
+      card+=amount;
+    }
+    const items=Array.isArray(sale.items)?sale.items:Object.values(sale.items||{});
+    for(const item of items){
+      if(!item) continue;
+      const qty=Number(item.qty)||0, price=Number(item.price)||0;
+      const cat=item.category || categoryByProduct[item.name] || "Sin categoría";
+      if(!cats[cat]) cats[cat]={qty:0,total:0};
+      cats[cat].qty+=qty;
+      cats[cat].total+=qty*price;
+    }
+    rows.push(sale);
+  }
+  document.getElementById("total").textContent=money(total);
+  document.getElementById("tables").textContent=rows.length;
+  document.getElementById("cash").textContent=money(cash);
+  document.getElementById("card").textContent=money(card);
+
+  const catEntries=Object.entries(cats).sort((a,b)=>b[1].total-a[1].total);
+  document.getElementById("categories").innerHTML=catEntries.length
+    ? `<table><thead><tr><th>Categoría</th><th>Unidades</th><th class="right">Ventas</th></tr></thead><tbody>${
+      catEntries.map(([c,x])=>`<tr><td>${esc(c)}</td><td>${x.qty}</td><td class="right">${money(x.total)}</td></tr>`).join("")
+    }</tbody><tfoot><tr><th>Total</th><th>${catEntries.reduce((s,[,x])=>s+x.qty,0)}</th><th class="right">${money(catEntries.reduce((s,[,x])=>s+x.total,0))}</th></tr></tfoot></table>`
+    : "Sin ventas.";
+
+  document.getElementById("details").innerHTML=rows.length
+    ? rows.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).map((sale,idx)=>{
+        const hora=sale.createdAt?new Date(sale.createdAt).toLocaleTimeString("es-ES",{hour:"2-digit",minute:"2-digit"}):"—";
+        const items=Array.isArray(sale.items)?sale.items:Object.values(sale.items||{});
+        const valid=items.filter(Boolean);
+        const itemHtml=valid.length
+          ? `<table style="margin-top:10px"><thead><tr><th>Producto</th><th>Categoría</th><th>Cant.</th><th class="right">Precio</th><th class="right">Importe</th></tr></thead><tbody>${
+              valid.map(item=>{
+                const qty=Number(item.qty)||0, price=Number(item.price)||0;
+                const cat=item.category || categoryByProduct[item.name] || "Sin categoría";
+                return `<tr><td>${esc(item.name||"Producto")}</td><td>${esc(cat)}</td><td>${qty}</td><td class="right">${money(price)}</td><td class="right">${money(qty*price)}</td></tr>`;
+              }).join("")
+            }</tbody></table>`
+          : `<div class="muted" style="margin-top:10px">Sin productos registrados.</div>`;
+        const note=sale.note || sale.notes || sale.comment || "";
+        return `<div class="card" style="margin:12px 0;padding:16px;border:1px solid #e6e6e6">
+          <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <strong style="font-size:20px">${esc(paymentLabel_title(sale))}</strong>
+              <div class="muted">Cerrada a las ${hora} · ${esc(paymentLabel(sale))}${sale.pickupTime?" · Recogida "+esc(sale.pickupTime):""}</div>
+            </div>
+            <strong style="font-size:22px">${money(Number(sale.total)||0)}</strong>
+          </div>
+          ${itemHtml}
+          ${note ? `<div style="margin-top:10px;padding:10px;border-radius:9px;background:#f7f7f8"><strong>📝 Nota:</strong> ${esc(note)}</div>` : ""}
+          <div class="no-print" style="margin-top:12px"><button class="primary" onclick='printSaleTicket(${JSON.stringify(sale).replace(/'/g,"&#39;")})'>🧾 Imprimir ticket de esta cuenta</button></div>
+        </div>`;
+      }).join("")
+    : "Sin mesas cerradas.";
+}
+
+function printSaleTicket(sale){
+  const items=Array.isArray(sale.items)?sale.items:Object.values(sale.items||{});
+  const valid=items.filter(Boolean);
+  const rows=valid.map(item=>{const qty=Number(item.qty)||0,price=Number(item.price)||0;return `<tr><td>${esc(qty+" × "+(item.name||"Producto"))}</td><td style="text-align:right">${money(qty*price)}</td></tr>`}).join("");
+  const payment=paymentLabel(sale);
+  const note=sale.note||sale.notes||sale.comment||"";
+  const titleLabel=paymentLabel_title(sale);
+  const w=window.open("","_blank");
+  if(!w){alert("El navegador bloqueó la ventana. Permite ventanas emergentes.");return}
+  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Ticket ${esc(titleLabel)} · La Yola</title><style>body{font-family:Arial,sans-serif;margin:20px auto;max-width:420px}h1{text-align:center;margin-bottom:4px}.meta{text-align:center;color:#555;margin-bottom:16px}table{width:100%;border-collapse:collapse}td{padding:7px 0;border-bottom:1px solid #ddd}.total{font-size:22px;font-weight:bold;text-align:right;margin-top:16px}.payment{font-weight:bold;margin-top:14px}.note{margin-top:12px;padding:10px;background:#f5f5f5;border-radius:8px}.actions{text-align:center;margin-bottom:18px}button{padding:10px 14px}@media print{.actions{display:none}}</style></head><body><div class="actions"><button onclick="window.print()">🖨️ Imprimir ticket</button></div><h1>La Yola</h1><div class="meta">${esc(titleLabel)}${sale.pickupTime?"<br>Recogida "+esc(sale.pickupTime):""}<br>${sale.createdAt?new Date(sale.createdAt).toLocaleString("es-ES"):""}</div><table>${rows}</table><div class="total">TOTAL: ${money(Number(sale.total)||0)}</div>${payment?`<div class="payment">Forma de pago: ${esc(payment)}</div>`:""}${note?`<div class="note"><strong>Nota:</strong> ${esc(note)}</div>`:""}</body></html>`);
+  w.document.close();
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mantenimiento · Pedidos para llevar</title>
+<style>
+body{margin:0;background:#f5f5f7;color:#111;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:16px}
+h1{font-size:20px}
+.card{background:#fff;border-radius:14px;padding:14px;margin:10px 0}
+.muted{color:#666;font-size:13px}
+button{padding:10px 14px;border:0;border-radius:10px;background:#eee;font:inherit;margin:4px 4px 4px 0}
+.danger{background:#fee;color:#a00}
+.nuke{background:#a00;color:#fff;width:100%;padding:14px;font-weight:800;margin-top:16px}
+input{padding:10px;border:1px solid #ccc;border-radius:10px;font:inherit;width:100%;margin:8px 0}
+pre{white-space:pre-wrap;word-break:break-word;background:#f0f0f0;padding:8px;border-radius:8px;font-size:12px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+</style>
+<script src="firebase-config.js"></script>
+</head>
+<body>
+<h1>🧹 Mantenimiento · Pedidos para llevar</h1>
+<div class="muted" id="status">Conectando…</div>
+
+<div class="card">
+  <b>Pedidos para llevar (crudo, sin filtrar)</b>
+  <div id="orders" class="muted">Cargando…</div>
+</div>
+
+<div class="card">
+  <b>Comandas de "Para llevar" (crudo, sin filtrar)</b>
+  <div id="cmds" class="muted">Cargando…</div>
+</div>
+
+<div class="card">
+  <b>⚠️ Vaciar todo</b>
+  <p class="muted">Esto borra TODOS los pedidos para llevar y sus comandas asociadas (no toca las mesas). Escribe BORRAR para confirmar.</p>
+  <input id="confirmText" placeholder="Escribe BORRAR">
+  <button class="nuke" onclick="nukeAll()">🧨 Vaciar todos los pedidos para llevar</button>
+</div>
+
+<script>
+let db, ref, onValue, set, get, update;
+let ordersData={}, cmdsData={};
+
+async function init(){
+  const f=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js');
+  const a=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js');
+  const r=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js');
+  const app=f.initializeApp(window.VENTAS_FIREBASE_CONFIG);
+  await a.signInAnonymously(a.getAuth(app));
+  ({ref,onValue,set,get,update}=r);
+  db=r.getDatabase(app);
+  onValue(ref(db,'ventas_la_yola/pedidos_para_llevar'),s=>{ordersData=s.val()||{};renderOrders()});
+  onValue(ref(db,'ventas_la_yola/comandas'),s=>{cmdsData=s.val()||{};renderCmds()});
+  document.getElementById('status').textContent='Conectado';
+}
+
+function renderOrders(){
+  const el=document.getElementById('orders');
+  const entries=Object.entries(ordersData);
+  if(!entries.length){el.innerHTML='<div class="muted">No hay ningún pedido para llevar.</div>';return}
+  el.innerHTML=entries.map(([id,o])=>`
+    <div class="card">
+      <div class="row"><b>${esc(o.customerName||o.name||'(sin nombre)')}</b>
+        <button class="danger" onclick="deleteOrder('${id}')">🗑️ Borrar este</button></div>
+      <div class="muted">id: ${id} · status: ${esc(o.status||'—')} · recogida: ${esc(o.pickupTime||o.pickup||'—')}</div>
+      <pre>${esc(JSON.stringify(o,null,1))}</pre>
+    </div>`).join('');
+}
+function renderCmds(){
+  const el=document.getElementById('cmds');
+  const entries=Object.entries(cmdsData).filter(([,c])=>c&&c.table==='Para llevar');
+  if(!entries.length){el.innerHTML='<div class="muted">No hay comandas de "Para llevar".</div>';return}
+  el.innerHTML=entries.map(([id,c])=>`
+    <div class="card">
+      <div class="row"><b>orderId: ${esc(c.orderId||'—')}</b>
+        <button class="danger" onclick="deleteCmd('${id}')">🗑️ Borrar esta</button></div>
+      <div class="muted">id: ${id} · status: ${esc(c.status||'—')}</div>
+      <pre>${esc(JSON.stringify(c,null,1))}</pre>
+    </div>`).join('');
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+async function deleteOrder(id){
+  if(!confirm('¿Borrar este pedido para llevar?'))return;
+  await set(ref(db,'ventas_la_yola/pedidos_para_llevar/'+id),null);
+  alert('Borrado.');
+}
+async function deleteCmd(id){
+  if(!confirm('¿Borrar esta comanda?'))return;
+  await set(ref(db,'ventas_la_yola/comandas/'+id),null);
+  alert('Borrada.');
+}
+async function nukeAll(){
+  if(document.getElementById('confirmText').value.trim().toUpperCase()!=='BORRAR'){
+    alert('Escribe BORRAR (en mayúsculas) en el campo para confirmar.');
+    return;
+  }
+  if(!confirm('Última confirmación: esto borra TODOS los pedidos para llevar y sus comandas. ¿Continuar?'))return;
+  const updates={};
+  updates['ventas_la_yola/pedidos_para_llevar']=null;
+  for(const [id,c] of Object.entries(cmdsData)){
+    if(c&&c.table==='Para llevar')updates['ventas_la_yola/comandas/'+id]=null;
+  }
+  await update(ref(db),updates);
+  alert('Listo, todo vaciado. Ya puedes crear pedidos para llevar nuevos desde cero.');
+}
+init();
+</script>
+</body>
+</html>
