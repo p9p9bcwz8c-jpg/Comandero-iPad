@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Estadísticas · Ventas La Yola</title>
+<script src="firebase-config.js"></script>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:#f3f4f6;color:#111}
+header{background:#fff;border-bottom:1px solid #ddd;padding:18px 24px;position:sticky;top:0;z-index:5}
+h1{margin:0 0 12px;font-size:25px}
+h2{margin:0 0 14px;font-size:18px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,button,a,select{font:inherit}
+input,select{padding:10px 12px;border:1px solid #ccc;border-radius:9px}
+button,.back{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;text-decoration:none;display:inline-block}
+.primary{background:#111;color:#fff}.secondary{background:#e9eaee;color:#111}
+.preset{background:#e9eaee;color:#111}
+.preset.active{background:#111;color:#fff}
+main{max-width:1300px;margin:auto;padding:24px}
+.card{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 1px 3px #0001}
+.grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.stat{border:1px solid #eee;border-radius:12px;padding:15px}
+.stat span{display:block;color:#666;font-size:13px}.stat b{display:block;font-size:22px;margin-top:5px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #eee}th{background:#f7f7f8}
+.right{text-align:right}.muted{color:#666}.error{color:#a00}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.barChart{display:flex;align-items:flex-end;gap:6px;height:180px;padding-top:10px}
+.barCol{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0}
+.barVal{font-size:11px;color:#666;margin-bottom:3px;white-space:nowrap}
+.bar{width:100%;background:#111;border-radius:6px 6px 0 0;min-height:2px}
+.barLabel{font-size:11px;color:#666;margin-top:6px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two-col{grid-template-columns:1fr}main{padding:14px}}
+.offlineBanner{display:none;background:#c0392b;color:#fff;text-align:center;padding:8px 12px;font-weight:700;font-size:14px}
+</style>
+</head>
+<body>
+<div id="offlineBanner" class="offlineBanner">⚠️ Sin conexión — no cierres esta pestaña</div>
+<header>
+  <h1>📈 Estadísticas · Ventas La Yola</h1>
+  <div class="controls">
+    <button class="preset" id="p_semana" onclick="setPreset('semana')">Esta semana</button>
+    <button class="preset" id="p_mes" onclick="setPreset('mes')">Este mes</button>
+    <button class="preset" id="p_30" onclick="setPreset('30')">Últimos 30 días</button>
+    <label>Desde <input id="f_start" type="date"></label>
+    <label>Hasta <input id="f_end" type="date"></label>
+    <button class="primary" onclick="setPreset('custom')">Consultar</button>
+    <a class="back secondary" href="index.html">← Volver al comandero</a>
+  </div>
+  <div id="status" class="muted" style="margin-top:8px">Conectando…</div>
+</header>
+
+<main>
+  <div class="grid" id="statsGrid">
+    <div class="stat"><span>Total de ventas</span><b id="s_total">0,00 €</b></div>
+    <div class="stat"><span>Cantidad de ventas</span><b id="s_count">0</b></div>
+    <div class="stat"><span>Efectivo</span><b id="s_cash">0,00 €</b></div>
+    <div class="stat"><span>Tarjeta</span><b id="s_card">0,00 €</b></div>
+    <div class="stat"><span>Ticket promedio</span><b id="s_avg">0,00 €</b></div>
+  </div>
+
+  <div class="card">
+    <h2>Ventas por día</h2>
+    <div class="barChart" id="chartDays"></div>
+  </div>
+
+  <div class="two-col">
+    <div class="card">
+      <h2>Ventas por hora del día</h2>
+      <div class="barChart" id="chartHours"></div>
+    </div>
+    <div class="card">
+      <h2>Promedio por día de la semana</h2>
+      <div class="barChart" id="chartWeekday"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🏆 Productos más vendidos</h2>
+    <table id="topTable">
+      <thead><tr><th>Producto</th><th class="right">Cantidad</th><th class="right">Ingresos</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+let db, ref, get, onValue;
+let allCierres={};
+let currentPreset='semana';
+
+function money(n){return new Intl.NumberFormat('es-ES',{style:'currency',currency:'EUR'}).format(Number(n)||0)}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function toKey(d){return d.toISOString().slice(0,10)}
+function addDays(d,n){const r=new Date(d);r.setUTCDate(r.getUTCDate()+n);return r}
+function startOfWeek(d){
+  const r=new Date(d);
+  const day=r.getUTCDay();
+  const diff=(day===0?-6:1-day);
+  return addDays(r,diff);
+}
+function startOfMonth(d){return new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),1))}
+
+async function init(){
+  try{
+    const f=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js');
+    const a=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js');
+    const r=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js');
+    const app=f.initializeApp(window.VENTAS_FIREBASE_CONFIG);
+    await a.signInAnonymously(a.getAuth(app));
+    ({ref,get,onValue}=r);
+    db=r.getDatabase(app);
+    onValue(ref(db,'.info/connected'),s=>{
+      const el=document.getElementById('offlineBanner');
+      if(el)el.style.display=s.val()===true?'none':'block';
+    });
+    await loadAll();
+    setPreset('semana');
+  }catch(e){
+    console.error(e);
+    document.getElementById('status').innerHTML='<span class="error">No se pudo conectar.</span>';
+  }
+}
+async function loadAll(){
+  document.getElementById('status').textContent='Cargando historial de ventas…';
+  const snap=await get(ref(db,'ventas_la_yola/cierres'));
+  allCierres=snap.val()||{};
+  document.getElementById('status').textContent='Datos cargados. Elige un rango de fechas.';
+}
+
+function setPreset(p){
+  currentPreset=p;
+  document.querySelectorAll('.preset').forEach(b=>b.classList.remove('active'));
+  const today=new Date(new Date().toISOString().slice(0,10)+'T00:00:00Z');
+  let start,end=today;
+  if(p==='semana'){start=startOfWeek(today);document.getElementById('p_semana').classList.add('active')}
+  else if(p==='mes'){start=startOfMonth(today);document.getElementById('p_mes').classList.add('active')}
+  else if(p==='30'){start=addDays(today,-29);document.getElementById('p_30').classList.add('active')}
+  else{
+    const sv=document.getElementById('f_start').value, ev=document.getElementById('f_end').value;
+    if(!sv||!ev){alert('Elige las dos fechas (Desde / Hasta).');return}
+    start=new Date(sv+'T00:00:00Z');end=new Date(ev+'T00:00:00Z');
+  }
+  document.getElementById('f_start').value=toKey(start);
+  document.getElementById('f_end').value=toKey(end);
+  renderRange(start,end);
+}
+
+function renderRange(start,end){
+  const sales=[];
+  for(let d=new Date(start);d<=end;d=addDays(d,1)){
+    const key=toKey(d);
+    const day=allCierres[key];
+    if(!day)continue;
+    Object.values(day).forEach(sale=>sales.push({...sale,_dateKey:key}));
+  }
+  renderStats(sales,start,end);
+}
+
+function renderStats(sales,start,end){
+  let total=0,cash=0,card=0;
+  const byDay={}, byHour=Array(24).fill(0), byWeekday=Array(7).fill(0).map(()=>({total:0,count:0}));
+  const productMap={};
+
+  sales.forEach(sale=>{
+    const amount=Number(sale.total)||0;
+    total+=amount;
+    if(sale.cash!=null||sale.card!=null){cash+=Number(sale.cash)||0;card+=Number(sale.card)||0}
+    else if(sale.payment==='efectivo')cash+=amount;
+    else if(sale.payment==='tarjeta')card+=amount;
+
+    byDay[sale._dateKey]=(byDay[sale._dateKey]||0)+amount;
+
+    if(sale.createdAt){
+      const dt=new Date(sale.createdAt);
+      byHour[dt.getHours()]+=amount;
+      let wd=dt.getDay();wd=wd===0?6:wd-1; // 0=Lunes...6=Domingo
+      byWeekday[wd].total+=amount;byWeekday[wd].count+=1;
+    }
+    (sale.items||[]).forEach(it=>{
+      const key=it.name;
+      if(!productMap[key])productMap[key]={name:it.name,qty:0,revenue:0};
+      productMap[key].qty+=Number(it.qty)||0;
+      productMap[key].revenue+=(Number(it.qty)||0)*(Number(it.price)||0);
+    });
+  });
+
+  document.getElementById('s_total').textContent=money(total);
+  document.getElementById('s_count').textContent=sales.length;
+  document.getElementById('s_cash').textContent=money(cash);
+  document.getElementById('s_card').textContent=money(card);
+  document.getElementById('s_avg').textContent=money(sales.length?total/sales.length:0);
+
+  // Ventas por día
+  const dayKeys=[];
+  for(let d=new Date(start);d<=end;d=addDays(d,1))dayKeys.push(toKey(d));
+  const dayVals=dayKeys.map(k=>byDay[k]||0);
+  const maxDay=Math.max(1,...dayVals);
+  document.getElementById('chartDays').innerHTML=dayKeys.map((k,i)=>{
+    const v=dayVals[i];
+    const label=new Date(k+'T00:00:00Z').toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',timeZone:'UTC'});
+    return `<div class="barCol"><div class="barVal">${v?money(v):''}</div><div class="bar" style="height:${Math.max(2,v/maxDay*140)}px"></div><div class="barLabel">${label}</div></div>`;
+  }).join('')||'<div class="muted">Sin datos en este rango.</div>';
+
+  // Ventas por hora
+  const maxHour=Math.max(1,...byHour);
+  document.getElementById('chartHours').innerHTML=byHour.map((v,h)=>
+    `<div class="barCol"><div class="barVal">${v?money(v):''}</div><div class="bar" style="height:${Math.max(2,v/maxHour*140)}px"></div><div class="barLabel">${h}h</div></div>`
+  ).join('');
+
+  // Promedio por día de la semana
+  const DIAS=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+  const wdAvg=byWeekday.map(x=>x.count?x.total/x.count:0);
+  const maxWd=Math.max(1,...wdAvg);
+  document.getElementById('chartWeekday').innerHTML=DIAS.map((d,i)=>
+    `<div class="barCol"><div class="barVal">${wdAvg[i]?money(wdAvg[i]):''}</div><div class="bar" style="height:${Math.max(2,wdAvg[i]/maxWd*140)}px"></div><div class="barLabel">${d}</div></div>`
+  ).join('');
+
+  // Top productos
+  const top=Object.values(productMap).sort((a,b)=>b.qty-a.qty).slice(0,15);
+  const tbody=document.querySelector('#topTable tbody');
+  tbody.innerHTML=top.length?top.map(p=>`<tr><td>${esc(p.name)}</td><td class="right">${p.qty}</td><td class="right">${money(p.revenue)}</td></tr>`).join('')
+    :'<tr><td colspan="3" class="muted">Sin datos en este rango.</td></tr>';
+
+  document.getElementById('status').textContent=`Mostrando ${toKey(start)} a ${toKey(end)} · ${sales.length} venta(s)`;
+}
+
+init();
+</script>
+</body>
+</html>
